@@ -7,10 +7,8 @@ dependencies {
 version = 1
 
 cloudstream {
-    // All of these properties are optional, you can safely remove any of them.
-
-    description = "Lorem ipsum"
-    authors = listOf("Cloudburst", "Luna712")
+    description = "Desi TV Serialz - Hindi TV Shows Extension"
+    authors = listOf("Taabar")
 
     /**
     * Status int as one of the following:
@@ -19,15 +17,14 @@ cloudstream {
     * 2: Slow
     * 3: Beta-only
     **/
-    status = 1 // Will be 3 if unspecified
+    status = 1
 
-    tvTypes = listOf("Movie")
+    tvTypes = listOf("TvSeries", "Movie")
 
     requiresResources = true
-    language = "en"
+    language = "hi"
 
-    // Random CC logo I found
-    iconUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png"
+    iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"
 }
 
 android {
