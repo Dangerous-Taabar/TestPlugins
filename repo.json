@@ -1,0 +1,8 @@
+{
+    "name": "TestPlugins",
+    "description": "My CloudStream extensions",
+    "manifestVersion": 1,
+    "pluginLists": [
+      "https://raw.githubusercontent.com/Dangerous-Taabar/TestPlugins/builds/plugins.json"
+    ]
+}
