@@ -111,7 +111,7 @@ class DesiTashanProvider : MainAPI() {
 
         // Har stream-row ke andar "Watch Now" link nikaalo
         val streamLinks = document.select(".stream-panel .stream-row .stream-action a")
-        
+
         for (link in streamLinks) {
             val href = link.attr("href")
             if (href.isEmpty()) continue
@@ -121,39 +121,58 @@ class DesiTashanProvider : MainAPI() {
             val playerName = row?.selectFirst(".stream-title")?.text()?.trim() ?: "Server"
 
             try {
-                // getlink.php page fetch karo
-                val response = app.get(href, referer = data).text
+                // getlink.php URL se v aur type extract karo
+                val v = Regex("""[?&]v=([^&]+)""").find(href)?.groupValues?.get(1) ?: ""
+                val type = Regex("""[?&]type=([^&]+)""").find(href)?.groupValues?.get(1) ?: "jwplayer"
 
-                // Multiple patterns se video URL dhundo
+                if (v.isEmpty()) continue
+
+                // Player URL banao (network tab se confirmed)
+                val playerUrl = "https://dstshndisk.showdetails.org/hls/$type.php?v=$v"
+
+                // Player page fetch karo
+                val playerHtml = app.get(playerUrl, referer = "https://watch.desitashan.ru/").text
+
                 var videoUrl: String? = null
                 var videoType = ExtractorLinkType.M3U8
 
-                // Pattern 1: m3u8 URL
-                Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']""").find(response)?.let {
-                    videoUrl = it.groupValues[1]
+                // Pattern 1: Direct m3u8
+                Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']""").find(playerHtml)?.let {
+                    videoUrl = it.groupValues[1].replace("\\/", "/")
                     videoType = ExtractorLinkType.M3U8
                 }
 
-                // Pattern 2: mp4 URL
+                // Pattern 2: JW Player file: property
                 if (videoUrl == null) {
-                    Regex("""["'](https?://[^"']+\.mp4[^"']*)["']""").find(response)?.let {
-                        videoUrl = it.groupValues[1]
-                        videoType = ExtractorLinkType.VIDEO
-                    }
-                }
-
-                // Pattern 3: source/src attributes
-                if (videoUrl == null) {
-                    Regex("""(?:src|file|source)\s*[:=]\s*["']([^"']+)["']""").find(response)?.let {
-                        val url = it.groupValues[1]
-                        if (url.startsWith("http") && (url.contains(".m3u8") || url.contains(".mp4"))) {
+                    Regex("""file\s*:\s*["']([^"']+)["']""").find(playerHtml)?.let {
+                        val url = it.groupValues[1].replace("\\/", "/")
+                        if (url.startsWith("http")) {
                             videoUrl = url
                             videoType = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         }
                     }
                 }
 
-                // Agar video URL mila
+                // Pattern 3: mp4
+                if (videoUrl == null) {
+                    Regex("""["'](https?://[^"']+\.mp4[^"']*)["']""").find(playerHtml)?.let {
+                        videoUrl = it.groupValues[1].replace("\\/", "/")
+                        videoType = ExtractorLinkType.VIDEO
+                    }
+                }
+
+                // Pattern 4: source src=
+                if (videoUrl == null) {
+                    Regex("""<source[^>]+src=["']([^"']+)["']""").find(playerHtml)?.let {
+                        val url = it.groupValues[1].replace("\\/", "/")
+                        if (url.startsWith("http")) {
+                            videoUrl = url
+                            videoType = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        }
+                    }
+                }
+
+                // Agar video URL mila toh callback
                 if (videoUrl != null) {
                     callback.invoke(
                         newExtractorLink(
@@ -162,7 +181,7 @@ class DesiTashanProvider : MainAPI() {
                             videoUrl,
                             type = videoType
                         ) {
-                            this.referer = href
+                            this.referer = playerUrl
                             this.quality = 720
                         }
                     )
@@ -170,32 +189,14 @@ class DesiTashanProvider : MainAPI() {
                     continue
                 }
 
-                // Agar video URL nahi mila to iframe check karo
-                Regex("""<iframe[^>]+src=["']([^"']+)["']""").find(response)?.let {
-                    val iframeUrl = fixUrl(it.groupValues[1])
-                    try {
-                        if (loadExtractor(iframeUrl, href, subtitleCallback, callback)) {
-                            found = true
-                            return@let
-                        }
-                    } catch (_: Exception) {}
-                }
+                // Fallback: loadExtractor try karo
+                try {
+                    if (loadExtractor(playerUrl, "https://watch.desitashan.ru/", subtitleCallback, callback)) {
+                        found = true
+                        continue
+                    }
+                } catch (_: Exception) {}
 
-                // Ya direct video tag
-                Regex("""<video[^>]+src=["']([^"']+)["']""").find(response)?.let {
-                    val vidUrl = fixUrl(it.groupValues[1])
-                    callback.invoke(
-                        newExtractorLink(
-                            name,
-                            playerName,
-                            vidUrl,
-                            type = if (vidUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        ) {
-                            this.referer = href
-                        }
-                    )
-                    found = true
-                }
             } catch (_: Exception) {
                 // Yeh server skip karo, next try karo
             }
