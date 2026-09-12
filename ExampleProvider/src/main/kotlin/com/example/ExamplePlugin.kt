@@ -7,6 +7,6 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class DesiTvSerialzPlugin : Plugin() {
     override fun load(context: Context) {
-        registerMainAPI(DesiTvSerialzProvider())
+        registerMainAPI(DesiTashanProvider())
     }
 }
