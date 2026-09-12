@@ -17,9 +17,9 @@ import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
+import org.json.JSONObject
 
 class DesiTashanProvider : MainAPI() {
     override var mainUrl = "https://watch.desitashan.ru"
@@ -31,17 +31,8 @@ class DesiTashanProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
     companion object {
-        private val ARTICLE_SELECTORS = listOf(
-            "article.post-item",
-            "article",
-            ".post-item"
-        )
-        private val TITLE_SELECTORS = listOf(
-            ".post-title a",
-            "h2.post-title a",
-            "h2 a",
-            "h3 a"
-        )
+        private const val PLAYER_BASE = "https://dstshndisk.showdetails.org/hls"
+        private const val BLOG_REFERER = "https://blog.showdetails.org/"
     }
 
     override val mainPage = mainPageOf(
@@ -64,18 +55,10 @@ class DesiTashanProvider : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        var title: String? = null
-        var href: String? = null
-        for (sel in TITLE_SELECTORS) {
-            val el = this.selectFirst(sel)
-            if (el != null) {
-                title = el.text().trim()
-                href = el.attr("href")
-                if (!title.isNullOrEmpty() && !href.isNullOrEmpty()) break
-            }
-        }
-        if (href.isNullOrEmpty()) href = this.selectFirst("a")?.attr("href")
-        if (title.isNullOrEmpty() || href.isNullOrEmpty()) return null
+        val titleEl = this.selectFirst(".post-title a, h2 a, h3 a")
+        val title = titleEl?.text()?.trim() ?: return null
+        val href = titleEl.attr("href")
+        if (href.isEmpty()) return null
 
         val poster = this.selectFirst(".post-thumbnail img, img.wp-post-image, img")?.let {
             it.attr("src").ifEmpty { it.attr("data-src") }
@@ -99,7 +82,7 @@ class DesiTashanProvider : MainAPI() {
         }
     }
 
-    // ==================== LOAD LINKS (MAIN LOGIC) ====================
+    // ==================== LOAD LINKS ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -110,112 +93,62 @@ class DesiTashanProvider : MainAPI() {
         var found = false
 
         // Saare "Watch Now" links nikaalo
-        val streamLinks = document.select(".stream-panel .stream-row .stream-action a")
+        val links = document.select(".stream-panel .stream-row .stream-action a")
 
-        for (link in streamLinks) {
-            val href = link.attr("href")
+        for (link in links) {
+            val href = link.attr("href").replace("&#038;", "&").replace("&amp;", "&")
             if (href.isEmpty()) continue
 
             val row = link.closest(".stream-row")
             val playerName = row?.selectFirst(".stream-title")?.text()?.trim() ?: "Server"
 
-            try {
-                // v token extract karo
-                val v = Regex("""[?&]v=([^&]+)""").find(href)?.groupValues?.get(1) ?: ""
-                if (v.isEmpty()) continue
+            // v token, part2, part3 extract karo
+            val tokens = mutableListOf<Pair<String, String>>()
 
-                // CORRECTED player URL (network tab se confirmed)
-                val playerUrl = "https://dstshndisk.showdetails.org/hls.php?v=$v"
+            Regex("""[?&]v=([^&]+)""").find(href)?.let {
+                tokens.add("Part 1" to it.groupValues[1])
+            }
+            Regex("""[?&]part2=([^&]+)""").find(href)?.let {
+                tokens.add("Part 2" to it.groupValues[1])
+            }
+            Regex("""[?&]part3=([^&]+)""").find(href)?.let {
+                tokens.add("Part 3" to it.groupValues[1])
+            }
 
-                // Player page fetch karo
-                val playerHtml = app.get(playerUrl, referer = data).text
+            // Har part ke liye media_meta fetch karo
+            for ((partLabel, token) in tokens) {
+                try {
+                    val metaUrl = "$PLAYER_BASE/media_meta.php?v=$token&type=player"
+                    val metaJson = app.get(metaUrl, referer = BLOG_REFERER).text
 
-                var videoUrl: String? = null
-                var videoType = ExtractorLinkType.M3U8
+                    val json = JSONObject(metaJson)
+                    val source = json.optJSONObject("source") ?: continue
+                    val file = source.optString("file", "")
+                    if (file.isEmpty()) continue
 
-                // Pattern 1: Direct m3u8
-                Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']""").find(playerHtml)?.let {
-                    videoUrl = it.groupValues[1].replace("\\/", "/")
-                    videoType = ExtractorLinkType.M3U8
-                }
+                    // Full URL banao
+                    val fullUrl = if (file.startsWith("http")) file
+                                  else "$PLAYER_BASE/$file"
 
-                // Pattern 2: JW Player file: property
-                if (videoUrl == null) {
-                    Regex("""file\s*:\s*["']([^"']+)["']""").find(playerHtml)?.let {
-                        val url = it.groupValues[1].replace("\\/", "/")
-                        if (url.startsWith("http")) {
-                            videoUrl = url
-                            videoType = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        }
-                    }
-                }
-
-                // Pattern 3: sources array with file
-                if (videoUrl == null) {
-                    Regex("""sources\s*:\s*\[\s*\{[^}]*?file\s*:\s*["']([^"']+)["']""").find(playerHtml)?.let {
-                        val url = it.groupValues[1].replace("\\/", "/")
-                        if (url.startsWith("http")) {
-                            videoUrl = url
-                            videoType = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        }
-                    }
-                }
-
-                // Pattern 4: mp4
-                if (videoUrl == null) {
-                    Regex("""["'](https?://[^"']+\.mp4[^"']*)["']""").find(playerHtml)?.let {
-                        videoUrl = it.groupValues[1].replace("\\/", "/")
-                        videoType = ExtractorLinkType.VIDEO
-                    }
-                }
-
-                // Pattern 5: source src=
-                if (videoUrl == null) {
-                    Regex("""<source[^>]+src=["']([^"']+)["']""").find(playerHtml)?.let {
-                        val url = it.groupValues[1].replace("\\/", "/")
-                        if (url.startsWith("http")) {
-                            videoUrl = url
-                            videoType = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        }
-                    }
-                }
-
-                // Pattern 6: escaped m3u8 (\/ escaped)
-                if (videoUrl == null) {
-                    Regex("""["'](https?:\\/\\/[^"']+\.m3u8[^"']*)["']""").find(playerHtml)?.let {
-                        videoUrl = it.groupValues[1].replace("\\/", "/")
-                        videoType = ExtractorLinkType.M3U8
-                    }
-                }
-
-                // Agar video URL mila toh callback
-                if (videoUrl != null) {
                     callback.invoke(
                         newExtractorLink(
                             name,
-                            playerName,
-                            videoUrl,
-                            type = videoType
+                            "$partLabel ($playerName)",
+                            fullUrl,
+                            type = ExtractorLinkType.VIDEO
                         ) {
-                            this.referer = playerUrl
+                            this.referer = BLOG_REFERER
                             this.quality = 720
                         }
                     )
                     found = true
-                    continue
+                } catch (_: Exception) {
+                    // Yeh part skip karo, next try karo
                 }
-
-                // Fallback: loadExtractor try karo
-                try {
-                    if (loadExtractor(playerUrl, data, subtitleCallback, callback)) {
-                        found = true
-                        continue
-                    }
-                } catch (_: Exception) {}
-
-            } catch (_: Exception) {
-                // Yeh server skip karo
             }
+
+            // Pehla server kaam kar gaya toh baaki skip kar sakte ho
+            if (found) break
         }
 
         return found
