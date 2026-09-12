@@ -1,6 +1,5 @@
 package com.example.ExamplePlugin
 
-import android.util.Base64
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -21,9 +20,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 class DesiTvSerialzProvider : MainAPI() {
     override var mainUrl = "https://desitvserialz.se"
@@ -44,7 +40,8 @@ class DesiTvSerialzProvider : MainAPI() {
         )
         private val TITLE_SELECTORS = listOf(
             ".post-box-title a",
-            "h2 a", "h3 a",
+            "h2 a",
+            "h3 a",
             ".entry-title a",
             ".title a"
         )
@@ -141,69 +138,83 @@ class DesiTvSerialzProvider : MainAPI() {
         val document = app.get(data, referer = "$mainUrl/").document
         var found = false
 
-        // STEP 1: Har server se data-embed aur data-sv-id nikaalo
-        val servers = document.select("#servers .server, a.server, .server")
-        for (server in servers) {
-            val embed = server.attr("data-embed")
-            val svId = server.attr("data-sv-id")
-            if (embed.isEmpty() || svId.isEmpty()) continue
+        // STEP 1: Saare iframes se Dailymotion video ID nikalo
+        document.select("iframe").forEach { iframe ->
+            val src = iframe.attr("src")
+                .ifEmpty { iframe.attr("data-src") }
+                .ifEmpty { iframe.attr("data-litespeed-src") }
 
-            // STEP 2: Player iframe URL construct karo
-            val playerUrl = "https://player.dramavideo.se/in?id=$embed&sv=$svId"
+            if (src.isNotEmpty() && src.contains("dailymotion")) {
+                val videoId = extractDailymotionId(src)
 
-            try {
-                // STEP 3: Player page fetch karo
-                val playerHtml = app.get(playerUrl, referer = data).text
+                if (videoId != null) {
+                    // STEP 2: Dailymotion metadata API se direct m3u8 link lo
+                    try {
+                        val apiUrl = "https://www.dailymotion.com/player/metadata/video/$videoId"
+                        val jsonResponse = app.get(apiUrl, referer = src).text
 
-                // STEP 4: encData, keyHex, ivHex extract karo
-                val encData = Regex("""encData\s*=\s*"([^"]+)"""").find(playerHtml)?.groupValues?.get(1)
-                val keyHex = Regex("""keyHex\s*=\s*"([^"]+)"""").find(playerHtml)?.groupValues?.get(1)
-                val ivHex = Regex("""ivHex\s*=\s*"([^"]+)"""").find(playerHtml)?.groupValues?.get(1)
+                        // STEP 3: JSON se m3u8 URL extract karo
+                        val m3u8Regex = Regex(""""(https?:\\/\\/[^"]+?\.m3u8[^"]*)"""")
+                        val m3u8Match = m3u8Regex.find(jsonResponse)
 
-                if (encData != null && keyHex != null && ivHex != null) {
-                    // STEP 5: AES-256-CBC decrypt
-                    val decryptedHtml = aesDecrypt(encData, keyHex, ivHex)
-                    if (decryptedHtml.isNotEmpty()) {
-                        // STEP 6: m3u8/mp4 URL nikaalo
-                        val videoMatch = Regex("""["'](https?://[^"']+\.(?:m3u8|mp4)[^"']*)["']""")
-                            .find(decryptedHtml)
-                        if (videoMatch != null) {
-                            val videoUrl = videoMatch.groupValues[1]
+                        if (m3u8Match != null) {
+                            val m3u8Url = m3u8Match.groupValues[1].replace("\\/", "/")
                             callback.invoke(
                                 newExtractorLink(
-                                    name,
-                                    "Server ($svId)",
-                                    videoUrl,
-                                    type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8
-                                           else ExtractorLinkType.VIDEO
+                                    this.name,
+                                    "Dailymotion",
+                                    m3u8Url,
+                                    type = ExtractorLinkType.M3U8
                                 ) {
-                                    this.referer = playerUrl
+                                    this.referer = "https://www.dailymotion.com/"
                                     this.quality = 720
                                 }
                             )
                             found = true
                         } else {
-                            // Fallback: decrypted HTML mein iframe dhundo
-                            val iframeMatch = Regex("""<iframe[^>]+src=["']([^"']+)["']""")
-                                .find(decryptedHtml)
-                            if (iframeMatch != null) {
-                                if (loadExtractor(fixUrl(iframeMatch.groupValues[1]), playerUrl, subtitleCallback, callback)) {
+                            // Fallback: saare m3u8 links dhoondo
+                            val anyUrlRegex = Regex(""""(https?:\\/\\/[^"]+?\.m3u8[^"]*)"""")
+                            anyUrlRegex.findAll(jsonResponse).forEach { match ->
+                                val url = match.groupValues[1].replace("\\/", "/")
+                                if (url.contains("dailymotion") || url.contains("dmcdn")) {
+                                    callback.invoke(
+                                        newExtractorLink(
+                                            this.name,
+                                            "Dailymotion",
+                                            url,
+                                            type = ExtractorLinkType.M3U8
+                                        ) {
+                                            this.referer = "https://www.dailymotion.com/"
+                                            this.quality = 720
+                                        }
+                                    )
                                     found = true
                                 }
                             }
                         }
+                    } catch (_: Exception) { }
+
+                    // STEP 4: Agar API se nahi mila to loadExtractor try karo
+                    if (!found) {
+                        try {
+                            if (loadExtractor(fixUrl(src), data, subtitleCallback, callback)) {
+                                found = true
+                            }
+                        } catch (_: Exception) {}
                     }
                 }
-            } catch (_: Exception) { }
+            }
         }
 
-        // FALLBACK: Direct iframe check
+        // FALLBACK: Agar Dailymotion nahi mila to koi bhi iframe try karo
         if (!found) {
             document.select("iframe").forEach { iframe ->
                 val src = iframe.attr("src").ifEmpty { iframe.attr("data-src") }
                 if (src.isNotEmpty() && src.startsWith("http")) {
                     try {
-                        if (loadExtractor(fixUrl(src), data, subtitleCallback, callback)) found = true
+                        if (loadExtractor(fixUrl(src), data, subtitleCallback, callback)) {
+                            found = true
+                        }
                     } catch (_: Exception) {}
                 }
             }
@@ -212,21 +223,17 @@ class DesiTvSerialzProvider : MainAPI() {
         return found
     }
 
-    // ==================== AES DECRYPTION HELPER ====================
-    private fun aesDecrypt(encDataB64: String, keyHex: String, ivHex: String): String {
-        return try {
-            val keyBytes = hexToBytes(keyHex)
-            val ivBytes = hexToBytes(ivHex)
-            val ciphertext = Base64.decode(encDataB64, Base64.DEFAULT)
-            val cipher = Cipher.getInstance("AES/CBC/PKCS7Padding")
-            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
-            String(cipher.doFinal(ciphertext), Charsets.UTF_8)
-        } catch (e: Exception) {
-            ""
+    // ==================== HELPER: Dailymotion ID Extractor ====================
+    private fun extractDailymotionId(url: String): String? {
+        val patterns = listOf(
+            Regex("""dailymotion\.com/(?:embed/)?video/([a-zA-Z0-9]+)"""),
+            Regex("""[?&]video=([a-zA-Z0-9]+)"""),
+            Regex("""dai\.ly/([a-zA-Z0-9]+)""")
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(url)
+            if (match != null) return match.groupValues[1]
         }
-    }
-
-    private fun hexToBytes(hex: String): ByteArray {
-        return hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        return null
     }
 }
