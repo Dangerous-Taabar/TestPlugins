@@ -1,0 +1,8 @@
+{
+  "name": "DesiTvSerialz Repository",
+  "description": "Desi TV Serialz - Hindi TV Shows Extension",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/Dangerous-Taabar/TestPlugins/builds/plugins.json"
+  ]
+}

@@ -1,0 +1,23 @@
+[
+    {
+        "iconUrl": "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
+        "fileHash": "sha256-3bbc538b4341d53899762c4fab50d218fe1bf289a8590b734bee57834a7ab6e8",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/Dangerous-Taabar/TestPlugins",
+        "fileSize": 14459,
+        "status": 1,
+        "language": "hi",
+        "authors": [
+            "Taabar"
+        ],
+        "tvTypes": [
+            "TvSeries",
+            "Movie"
+        ],
+        "version": 1,
+        "internalName": "ExampleProvider",
+        "description": "Desi TV Serialz - Hindi TV Shows Extension",
+        "url": "https://raw.githubusercontent.com/Dangerous-Taabar/TestPlugins/builds/ExampleProvider.cs3",
+        "name": "ExampleProvider"
+    }
+]
