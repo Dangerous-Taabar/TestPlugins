@@ -109,29 +109,26 @@ class DesiTashanProvider : MainAPI() {
         val document = app.get(data, referer = "$mainUrl/").document
         var found = false
 
-        // Har stream-row ke andar "Watch Now" link nikaalo
+        // Saare "Watch Now" links nikaalo
         val streamLinks = document.select(".stream-panel .stream-row .stream-action a")
 
         for (link in streamLinks) {
             val href = link.attr("href")
             if (href.isEmpty()) continue
 
-            // Player ka naam nikaalo (JW Player, Video.js, Plyr, Shaka, HLS)
             val row = link.closest(".stream-row")
             val playerName = row?.selectFirst(".stream-title")?.text()?.trim() ?: "Server"
 
             try {
-                // getlink.php URL se v aur type extract karo
+                // v token extract karo
                 val v = Regex("""[?&]v=([^&]+)""").find(href)?.groupValues?.get(1) ?: ""
-                val type = Regex("""[?&]type=([^&]+)""").find(href)?.groupValues?.get(1) ?: "jwplayer"
-
                 if (v.isEmpty()) continue
 
-                // Player URL banao (network tab se confirmed)
-                val playerUrl = "https://dstshndisk.showdetails.org/hls/$type.php?v=$v"
+                // CORRECTED player URL (network tab se confirmed)
+                val playerUrl = "https://dstshndisk.showdetails.org/hls.php?v=$v"
 
                 // Player page fetch karo
-                val playerHtml = app.get(playerUrl, referer = "https://watch.desitashan.ru/").text
+                val playerHtml = app.get(playerUrl, referer = data).text
 
                 var videoUrl: String? = null
                 var videoType = ExtractorLinkType.M3U8
@@ -153,7 +150,18 @@ class DesiTashanProvider : MainAPI() {
                     }
                 }
 
-                // Pattern 3: mp4
+                // Pattern 3: sources array with file
+                if (videoUrl == null) {
+                    Regex("""sources\s*:\s*\[\s*\{[^}]*?file\s*:\s*["']([^"']+)["']""").find(playerHtml)?.let {
+                        val url = it.groupValues[1].replace("\\/", "/")
+                        if (url.startsWith("http")) {
+                            videoUrl = url
+                            videoType = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        }
+                    }
+                }
+
+                // Pattern 4: mp4
                 if (videoUrl == null) {
                     Regex("""["'](https?://[^"']+\.mp4[^"']*)["']""").find(playerHtml)?.let {
                         videoUrl = it.groupValues[1].replace("\\/", "/")
@@ -161,7 +169,7 @@ class DesiTashanProvider : MainAPI() {
                     }
                 }
 
-                // Pattern 4: source src=
+                // Pattern 5: source src=
                 if (videoUrl == null) {
                     Regex("""<source[^>]+src=["']([^"']+)["']""").find(playerHtml)?.let {
                         val url = it.groupValues[1].replace("\\/", "/")
@@ -169,6 +177,14 @@ class DesiTashanProvider : MainAPI() {
                             videoUrl = url
                             videoType = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         }
+                    }
+                }
+
+                // Pattern 6: escaped m3u8 (\/ escaped)
+                if (videoUrl == null) {
+                    Regex("""["'](https?:\\/\\/[^"']+\.m3u8[^"']*)["']""").find(playerHtml)?.let {
+                        videoUrl = it.groupValues[1].replace("\\/", "/")
+                        videoType = ExtractorLinkType.M3U8
                     }
                 }
 
@@ -191,14 +207,14 @@ class DesiTashanProvider : MainAPI() {
 
                 // Fallback: loadExtractor try karo
                 try {
-                    if (loadExtractor(playerUrl, "https://watch.desitashan.ru/", subtitleCallback, callback)) {
+                    if (loadExtractor(playerUrl, data, subtitleCallback, callback)) {
                         found = true
                         continue
                     }
                 } catch (_: Exception) {}
 
             } catch (_: Exception) {
-                // Yeh server skip karo, next try karo
+                // Yeh server skip karo
             }
         }
 
