@@ -13,11 +13,9 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.fixUrl
 import com.lagradost.cloudstream3.fixUrlNull
 import com.lagradost.cloudstream3.mainPageOf
-import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
-import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
@@ -37,22 +35,21 @@ class DesiTvSerialzProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
     companion object {
-        // WordPress Sahifa theme ke liye sahi selectors
         private val ARTICLE_SELECTORS = listOf(
-            ".recent-item",        // ← Asli selector (homepage)
+            ".recent-item",
             ".tie_video",
             "article",
             ".post",
             ".video-item"
         )
         private val TITLE_SELECTORS = listOf(
-            ".post-box-title a",   // ← Asli selector
+            ".post-box-title a",
             "h2 a", "h3 a",
             ".entry-title a",
             ".title a"
         )
         private val POSTER_SELECTORS = listOf(
-            ".post-thumbnail img", // ← Asli selector
+            ".post-thumbnail img",
             "img.wp-post-image",
             ".entry-thumb img",
             "img"
@@ -128,14 +125,13 @@ class DesiTvSerialzProvider : MainAPI() {
         val description = document.selectFirst("meta[name=description]")?.attr("content")
             ?: document.selectFirst(".entry-content p, .post-content p")?.text()
 
-        // Yeh ek single episode page hai, isliye direct movie banao
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = fixUrlNull(poster)
             this.plot = description
         }
     }
 
-    // ==================== LOAD LINKS (MAIN FIX) ====================
+    // ==================== LOAD LINKS (VIDEO PLAYBACK) ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -145,40 +141,32 @@ class DesiTvSerialzProvider : MainAPI() {
         val document = app.get(data, referer = "$mainUrl/").document
         var found = false
 
-        // ---- STEP 1: Har server se data-embed aur data-sv-id nikaalo ----
-        val servers = document.select("#servers .server, a.server")
+        // STEP 1: Har server se data-embed aur data-sv-id nikaalo
+        val servers = document.select("#servers .server, a.server, .server")
         for (server in servers) {
             val embed = server.attr("data-embed")
             val svId = server.attr("data-sv-id")
-            
             if (embed.isEmpty() || svId.isEmpty()) continue
 
-            // ---- STEP 2: Player iframe URL construct karo ----
-            // Host = https://player.dramavideo.se (from cdn.js decryption)
+            // STEP 2: Player iframe URL construct karo
             val playerUrl = "https://player.dramavideo.se/in?id=$embed&sv=$svId"
 
             try {
-                // ---- STEP 3: Player page fetch karo ----
-                val playerDoc = app.get(playerUrl, referer = data).text
-                
-                // ---- STEP 4: encData, keyHex, ivHex extract karo ----
-                val encDataRegex = Regex("""encData\s*=\s*"([^"]+)"""")
-                val keyRegex = Regex("""keyHex\s*=\s*"([^"]+)"""")
-                val ivRegex = Regex("""ivHex\s*=\s*"([^"]+)"""")
+                // STEP 3: Player page fetch karo
+                val playerHtml = app.get(playerUrl, referer = data).text
 
-                val encData = encDataRegex.find(playerDoc)?.groupValues?.get(1)
-                val keyHex = keyRegex.find(playerDoc)?.groupValues?.get(1)
-                val ivHex = ivRegex.find(playerDoc)?.groupValues?.get(1)
+                // STEP 4: encData, keyHex, ivHex extract karo
+                val encData = Regex("""encData\s*=\s*"([^"]+)"""").find(playerHtml)?.groupValues?.get(1)
+                val keyHex = Regex("""keyHex\s*=\s*"([^"]+)"""").find(playerHtml)?.groupValues?.get(1)
+                val ivHex = Regex("""ivHex\s*=\s*"([^"]+)"""").find(playerHtml)?.groupValues?.get(1)
 
                 if (encData != null && keyHex != null && ivHex != null) {
-                    // ---- STEP 5: AES-256-CBC decrypt karo ----
+                    // STEP 5: AES-256-CBC decrypt
                     val decryptedHtml = aesDecrypt(encData, keyHex, ivHex)
-
                     if (decryptedHtml.isNotEmpty()) {
-                        // ---- STEP 6: Decrypted HTML mein se video URL nikaalo ----
-                        val videoUrlRegex = Regex("""["'](https?://[^"']+\.(?:m3u8|mp4)[^"']*)["']""")
-                        val videoMatch = videoUrlRegex.find(decryptedHtml)
-
+                        // STEP 6: m3u8/mp4 URL nikaalo
+                        val videoMatch = Regex("""["'](https?://[^"']+\.(?:m3u8|mp4)[^"']*)["']""")
+                            .find(decryptedHtml)
                         if (videoMatch != null) {
                             val videoUrl = videoMatch.groupValues[1]
                             callback.invoke(
@@ -186,7 +174,7 @@ class DesiTvSerialzProvider : MainAPI() {
                                     name,
                                     "Server ($svId)",
                                     videoUrl,
-                                    type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 
+                                    type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8
                                            else ExtractorLinkType.VIDEO
                                 ) {
                                     this.referer = playerUrl
@@ -195,12 +183,11 @@ class DesiTvSerialzProvider : MainAPI() {
                             )
                             found = true
                         } else {
-                            // Agar decrypted HTML mein iframe/script hai toh loadExtractor try karo
-                            val iframeRegex = Regex("""<iframe[^>]+src=["']([^"']+)["']""")
-                            val iframeMatch = iframeRegex.find(decryptedHtml)
+                            // Fallback: decrypted HTML mein iframe dhundo
+                            val iframeMatch = Regex("""<iframe[^>]+src=["']([^"']+)["']""")
+                                .find(decryptedHtml)
                             if (iframeMatch != null) {
-                                val iframeUrl = iframeMatch.groupValues[1]
-                                if (loadExtractor(fixUrl(iframeUrl), playerUrl, subtitleCallback, callback)) {
+                                if (loadExtractor(fixUrl(iframeMatch.groupValues[1]), playerUrl, subtitleCallback, callback)) {
                                     found = true
                                 }
                             }
@@ -208,21 +195,15 @@ class DesiTvSerialzProvider : MainAPI() {
                     }
                 }
             } catch (_: Exception) { }
-
-            // Agar pehla server kaam kar gaya toh baaki skip kar sakte ho,
-            // lekin multiple servers dena better hai
         }
 
-        // ---- FALLBACK: Agar servers se kuch nahi mila ----
+        // FALLBACK: Direct iframe check
         if (!found) {
-            // Direct iframe check (agar kabhi ho)
             document.select("iframe").forEach { iframe ->
                 val src = iframe.attr("src").ifEmpty { iframe.attr("data-src") }
                 if (src.isNotEmpty() && src.startsWith("http")) {
                     try {
-                        if (loadExtractor(fixUrl(src), data, subtitleCallback, callback)) {
-                            found = true
-                        }
+                        if (loadExtractor(fixUrl(src), data, subtitleCallback, callback)) found = true
                     } catch (_: Exception) {}
                 }
             }
@@ -237,16 +218,9 @@ class DesiTvSerialzProvider : MainAPI() {
             val keyBytes = hexToBytes(keyHex)
             val ivBytes = hexToBytes(ivHex)
             val ciphertext = Base64.decode(encDataB64, Base64.DEFAULT)
-
             val cipher = Cipher.getInstance("AES/CBC/PKCS7Padding")
-            cipher.init(
-                Cipher.DECRYPT_MODE,
-                SecretKeySpec(keyBytes, "AES"),
-                IvParameterSpec(ivBytes)
-            )
-
-            val plainBytes = cipher.doFinal(ciphertext)
-            String(plainBytes, Charsets.UTF_8)
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
+            String(cipher.doFinal(ciphertext), Charsets.UTF_8)
         } catch (e: Exception) {
             ""
         }
