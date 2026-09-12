@@ -3,6 +3,8 @@ name: Build
 on:
   push:
     branches: [ master, main ]
+    paths-ignore:
+      - '*.md'
   workflow_dispatch:
 
 jobs:
@@ -24,20 +26,44 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
       - name: Build plugins
         run: ./gradlew make makePluginsJson --stacktrace --no-daemon
 
-      - name: Collect .cs3 files into build folder
-        run: cp **/build/*.cs3 build/ 2>/dev/null || true
+      - name: Prepare dist folder
+        run: |
+          mkdir -p dist
+          cp build/plugins.json dist/plugins.json
+          find . -name "*.cs3" -type f -not -path "./dist/*" -exec cp {} dist/ \;
+          echo "=== dist/ contents ==="
+          ls -la dist/
+
+      - name: Generate repo.json manifest
+        run: |
+          REPO="${{ github.repository }}"
+          cat > dist/repo.json << EOF
+          {
+            "name": "DesiTvSerialz Repository",
+            "description": "Desi TV Serialz - Hindi TV Shows Extension",
+            "manifestVersion": 1,
+            "pluginLists": [
+              "https://raw.githubusercontent.com/${REPO}/builds/plugins.json"
+            ]
+          }
+          EOF
+          echo "=== repo.json ==="
+          cat dist/repo.json
 
       - name: Deploy to builds branch
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./build
+          publish_dir: ./dist
           publish_branch: builds
           force_orphan: true
           commit_message: "Auto-build: ${{ github.run_number }}"
